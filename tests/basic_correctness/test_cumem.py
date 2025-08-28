@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import pytest
 import torch
@@ -155,6 +156,55 @@ def test_end_to_end(monkeypatch: pytest.MonkeyPatch, model: str, use_v1: bool):
 
         llm.wake_up()
         output2 = llm.generate(prompt, sampling_params)
-
         # cmp output
         assert output[0].outputs[0].text == output2[0].outputs[0].text
+
+        llm.sleep(level=1)
+        llm.wake_up(tags=["weights"])
+
+        free_gpu_bytes_wake_up_w, total = torch.cuda.mem_get_info()
+        used_bytes = total - free_gpu_bytes_wake_up_w - used_bytes_baseline
+
+        # should just reallocate memory for weights (1B model, ~2GiB weights)
+        if use_v1:
+            assert used_bytes < 10 * GiB_bytes
+        else:
+            assert used_bytes < 6 * GiB_bytes
+
+        # now allocate kv cache memory
+        llm.wake_up(tags=["kv_cache"])
+        output3 = llm.generate(prompt, sampling_params)
+
+        # cmp output
+        assert output[0].outputs[0].text == output3[0].outputs[0].text
+
+
+@create_new_process_for_each_test()
+def test_deep_sleep():
+    model = "Qwen/Qwen3-0.6B"
+    free, total = torch.cuda.mem_get_info()
+    used_bytes_baseline = total - free  # in case other process is running
+    llm = LLM(model, enable_sleep_mode=True)
+    prompt = "How are you?"
+    sampling_params = SamplingParams(temperature=0, max_tokens=10)
+    output = llm.generate(prompt, sampling_params)
+
+    # Put the engine to deep sleep
+    llm.sleep(level=2)
+
+    free_gpu_bytes_after_sleep, total = torch.cuda.mem_get_info()
+    used_bytes = total - free_gpu_bytes_after_sleep - used_bytes_baseline
+    assert used_bytes < 3 * GiB_bytes
+
+    llm.wake_up(tags=["weights"])
+    llm.collective_rpc("reload_weights")
+    free_gpu_bytes_wake_up_w, total = torch.cuda.mem_get_info()
+    used_bytes = total - free_gpu_bytes_wake_up_w - used_bytes_baseline
+    assert used_bytes < 4 * GiB_bytes
+
+    # now allocate kv cache and cuda graph memory
+    llm.wake_up(tags=["kv_cache"])
+    output2 = llm.generate(prompt, sampling_params)
+
+    # cmp output
+    assert output[0].outputs[0].text == output2[0].outputs[0].text

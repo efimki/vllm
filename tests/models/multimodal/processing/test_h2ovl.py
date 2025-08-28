@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Tests for H2OVL's multimodal preprocessing kwargs."""
 from collections.abc import Mapping
 from typing import Optional
@@ -10,9 +11,8 @@ from transformers import PretrainedConfig
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.image import rescale_image_size
 from vllm.multimodal.processing import BaseMultiModalProcessor
-from vllm.transformers_utils.tokenizer import cached_tokenizer_from_config
 
-from ....conftest import _ImageAssets
+from ....conftest import ImageTestAssets
 from ...utils import build_model_context
 
 
@@ -108,7 +108,8 @@ def _run_check(
     # Ensure we have the right number of placeholders per num_crops size
     image_token_id = tokenizer.convert_tokens_to_ids("<IMG_CONTEXT>")
     img_tok_count = processed_inputs["prompt_token_ids"].count(image_token_id)
-    pixel_shape = processed_inputs["mm_kwargs"]["pixel_values_flat"].shape
+    pixel_shape = processed_inputs["mm_kwargs"].get_data(
+    )["pixel_values_flat"].shape
 
     assert img_tok_count == 256 * total_expected_num_patches
     assert pixel_shape[0] == total_expected_num_patches
@@ -138,7 +139,7 @@ def _run_check(
 @pytest.mark.parametrize("kwargs_on_init", [True, False])
 def test_processor_override(
     model_id: str,
-    image_assets: _ImageAssets,
+    image_assets: ImageTestAssets,
     size_factors: list[int],
     min_dynamic_patch: int,
     max_dynamic_patch: int,
@@ -156,11 +157,7 @@ def test_processor_override(
         mm_processor_kwargs=mm_processor_kwargs if kwargs_on_init else None,
         limit_mm_per_prompt={"image": len(size_factors)},
     )
-    tokenizer = cached_tokenizer_from_config(ctx.model_config)
-    processor = MULTIMODAL_REGISTRY.create_processor(
-        ctx.model_config,
-        tokenizer=tokenizer,
-    )
+    processor = MULTIMODAL_REGISTRY.create_processor(ctx.model_config)
     hf_processor_mm_kwargs = {} if kwargs_on_init else mm_processor_kwargs
 
     min_num = min_dynamic_patch if dynamic_image_size else 1

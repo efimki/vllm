@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import time
-from typing import TYPE_CHECKING
 from typing import Counter as CollectionsCounter
 from typing import Dict, List, Optional, Type, Union, cast
 
@@ -18,9 +18,6 @@ if ray is not None:
 else:
     ray_metrics = None
 
-if TYPE_CHECKING:
-    from vllm.spec_decode.metrics import SpecDecodeWorkerMetrics
-
 logger = init_logger(__name__)
 
 prometheus_client.disable_created_metrics()
@@ -29,7 +26,7 @@ prometheus_client.disable_created_metrics()
 # to extract the metrics definitions.
 
 
-# begin-metrics-definitions
+# --8<-- [start:metrics-definitions]
 class Metrics:
     """
     vLLM uses a multiprocessing-based frontend for the OpenAI server.
@@ -51,6 +48,11 @@ class Metrics:
         self._unregister_vllm_metrics()
 
         max_model_len = vllm_config.model_config.max_model_len
+
+        # Use this flag to hide metrics that were deprecated in
+        # a previous release and which will be removed future
+        self.show_hidden_metrics = \
+            vllm_config.observability_config.show_hidden_metrics
 
         # System stats
         #   Scheduler State
@@ -75,50 +77,10 @@ class Metrics:
             multiprocess_mode="livemostrecent",
         )
 
-        # Deprecated in 0.8 - KV cache offloading is not used in V1
-        # TODO: in 0.9, only enable if show_hidden_metrics=True
-        self.gauge_scheduler_swapped = self._gauge_cls(
-            name="vllm:num_requests_swapped",
-            documentation=(
-                "Number of requests swapped to CPU. "
-                "DEPRECATED: KV cache offloading is not used in V1"),
-            labelnames=labelnames,
-            multiprocess_mode="sum")
-
         #   KV Cache Usage in %
         self.gauge_gpu_cache_usage = self._gauge_cls(
             name="vllm:gpu_cache_usage_perc",
             documentation="GPU KV-cache usage. 1 means 100 percent usage.",
-            labelnames=labelnames,
-            multiprocess_mode="sum")
-
-        # Deprecated in 0.8 - KV cache offloading is not used in V1
-        # TODO: in 0.9, only enable if show_hidden_metrics=True
-        self.gauge_cpu_cache_usage = self._gauge_cls(
-            name="vllm:cpu_cache_usage_perc",
-            documentation=(
-                "CPU KV-cache usage. 1 means 100 percent usage. "
-                "DEPRECATED: KV cache offloading is not used in V1"),
-            labelnames=labelnames,
-            multiprocess_mode="sum")
-
-        # Deprecated in 0.8 - KV cache offloading is not used in V1
-        # TODO: in 0.9, only enable if show_hidden_metrics=True
-        self.gauge_cpu_prefix_cache_hit_rate = self._gauge_cls(
-            name="vllm:cpu_prefix_cache_hit_rate",
-            documentation=(
-                "CPU prefix cache block hit rate. "
-                "DEPRECATED: KV cache offloading is not used in V1"),
-            labelnames=labelnames,
-            multiprocess_mode="sum")
-
-        # Deprecated in 0.8 - replaced by queries+hits counters in V1
-        # TODO: in 0.9, only enable if show_hidden_metrics=True
-        self.gauge_gpu_prefix_cache_hit_rate = self._gauge_cls(
-            name="vllm:gpu_prefix_cache_hit_rate",
-            documentation=("GPU prefix cache block hit rate. "
-                           "DEPRECATED: use vllm:gpu_prefix_cache_queries and "
-                           "vllm:gpu_prefix_cache_queries in V1"),
             labelnames=labelnames,
             multiprocess_mode="sum")
 
@@ -135,23 +97,21 @@ class Metrics:
             name="vllm:generation_tokens_total",
             documentation="Number of generation tokens processed.",
             labelnames=labelnames)
-        buckets = [1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8096]
-        if not vllm_config.model_config.enforce_eager:
-            buckets = vllm_config.compilation_config.\
-                cudagraph_capture_sizes.copy()
-            buckets.sort()
         self.histogram_iteration_tokens = self._histogram_cls(
             name="vllm:iteration_tokens_total",
             documentation="Histogram of number of tokens per engine_step.",
             labelnames=labelnames,
-            buckets=buckets)
+            buckets=[
+                1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384
+            ])
         self.histogram_time_to_first_token = self._histogram_cls(
             name="vllm:time_to_first_token_seconds",
             documentation="Histogram of time to first token in seconds.",
             labelnames=labelnames,
             buckets=[
                 0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.25, 0.5,
-                0.75, 1.0, 2.5, 5.0, 7.5, 10.0
+                0.75, 1.0, 2.5, 5.0, 7.5, 10.0, 20.0, 40.0, 80.0, 160.0, 640.0,
+                2560.0
             ])
         self.histogram_time_per_output_token = self._histogram_cls(
             name="vllm:time_per_output_token_seconds",
@@ -159,14 +119,14 @@ class Metrics:
             labelnames=labelnames,
             buckets=[
                 0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75,
-                1.0, 2.5
+                1.0, 2.5, 5.0, 7.5, 10.0, 20.0, 40.0, 80.0
             ])
 
         # Request stats
         #   Latency
         request_latency_buckets = [
             0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0,
-            40.0, 50.0, 60.0
+            40.0, 50.0, 60.0, 120.0, 240.0, 480.0, 960.0, 1920.0, 7680.0
         ]
         self.histogram_e2e_time_request = self._histogram_cls(
             name="vllm:e2e_request_latency_seconds",
@@ -197,34 +157,6 @@ class Metrics:
             "Histogram of time spent in DECODE phase for request.",
             labelnames=labelnames,
             buckets=request_latency_buckets)
-        # Deprecated in 0.8 - duplicates vllm:request_queue_time_seconds:
-        # TODO: in 0.9, only enable if show_hidden_metrics=True
-        self.histogram_time_in_queue_request = self._histogram_cls(
-            name="vllm:time_in_queue_requests",
-            documentation=(
-                "Histogram of time the request spent in the queue in seconds. "
-                "DEPRECATED: use vllm:request_queue_time_seconds instead."),
-            labelnames=labelnames,
-            buckets=request_latency_buckets)
-
-        # Deprecated in 0.8 - use prefill/decode/inference time metrics
-        # TODO: in 0.9, only enable if show_hidden_metrics=True
-        self.histogram_model_forward_time_request = self._histogram_cls(
-            name="vllm:model_forward_time_milliseconds",
-            documentation=(
-                "Histogram of time spent in the model forward pass in ms. "
-                "DEPRECATED: use prefill/decode/inference time metrics instead."
-            ),
-            labelnames=labelnames,
-            buckets=build_1_2_3_5_8_buckets(3000))
-        self.histogram_model_execute_time_request = self._histogram_cls(
-            name="vllm:model_execute_time_milliseconds",
-            documentation=(
-                "Histogram of time spent in the model execute function in ms."
-                "DEPRECATED: use prefill/decode/inference time metrics instead."
-            ),
-            labelnames=labelnames,
-            buckets=build_1_2_3_5_8_buckets(3000))
 
         #   Metadata
         self.histogram_num_prompt_tokens_request = self._histogram_cls(
@@ -263,32 +195,8 @@ class Metrics:
             documentation="Count of successfully processed requests.",
             labelnames=labelnames + [Metrics.labelname_finish_reason])
 
-        # Speculative decoding stats
-        self.gauge_spec_decode_draft_acceptance_rate = self._gauge_cls(
-            name="vllm:spec_decode_draft_acceptance_rate",
-            documentation="Speulative token acceptance rate.",
-            labelnames=labelnames,
-            multiprocess_mode="sum")
-        self.gauge_spec_decode_efficiency = self._gauge_cls(
-            name="vllm:spec_decode_efficiency",
-            documentation="Speculative decoding system efficiency.",
-            labelnames=labelnames,
-            multiprocess_mode="sum")
-        self.counter_spec_decode_num_accepted_tokens = (self._counter_cls(
-            name="vllm:spec_decode_num_accepted_tokens_total",
-            documentation="Number of accepted tokens.",
-            labelnames=labelnames))
-        self.counter_spec_decode_num_draft_tokens = self._counter_cls(
-            name="vllm:spec_decode_num_draft_tokens_total",
-            documentation="Number of draft tokens.",
-            labelnames=labelnames)
-        self.counter_spec_decode_num_emitted_tokens = (self._counter_cls(
-            name="vllm:spec_decode_num_emitted_tokens_total",
-            documentation="Number of emitted tokens.",
-            labelnames=labelnames))
 
-
-# end-metrics-definitions
+# --8<-- [end:metrics-definitions]
 
     def _unregister_vllm_metrics(self) -> None:
         for collector in list(prometheus_client.REGISTRY._collector_to_names):
@@ -455,9 +363,6 @@ class LoggingStatLogger(StatLoggerBase):
         self.num_prompt_tokens.append(stats.num_prompt_tokens_iter)
         self.num_generation_tokens.append(stats.num_generation_tokens_iter)
 
-        # Update spec decode metrics
-        self.maybe_update_spec_decode_metrics(stats)
-
         # Log locally every local_interval seconds.
         if local_interval_elapsed(stats.now, self.last_local_log,
                                   self.local_interval):
@@ -499,10 +404,6 @@ class LoggingStatLogger(StatLoggerBase):
                     stats.gpu_prefix_cache_hit_rate * 100,
                     stats.cpu_prefix_cache_hit_rate * 100,
                 )
-            if self.spec_decode_metrics is not None:
-                log_fn(
-                    self._format_spec_decode_metrics_str(
-                        self.spec_decode_metrics))
 
             self._reset(stats, prompt_throughput, generation_throughput)
 
@@ -511,20 +412,8 @@ class LoggingStatLogger(StatLoggerBase):
         self.num_prompt_tokens = []
         self.num_generation_tokens = []
         self.last_local_log = stats.now
-        self.spec_decode_metrics = None
         self.last_prompt_throughput = prompt_throughput
         self.last_generation_throughput = generation_throughput
-
-    def _format_spec_decode_metrics_str(
-            self, metrics: "SpecDecodeWorkerMetrics") -> str:
-
-        return ("Speculative metrics: "
-                f"Draft acceptance rate: {metrics.draft_acceptance_rate:.3f}, "
-                f"System efficiency: {metrics.system_efficiency:.3f}, "
-                f"Number of speculative tokens: {metrics.num_spec_tokens}, "
-                f"Number of accepted tokens: {metrics.accepted_tokens}, "
-                f"Number of draft tokens: {metrics.draft_tokens}, "
-                f"Number of emitted tokens: {metrics.emitted_tokens}.")
 
     def info(self, type: str, obj: SupportsMetricsInfo) -> None:
         raise NotImplementedError
@@ -542,11 +431,6 @@ class PrometheusStatLogger(StatLoggerBase):
         self.labels = labels
         self.metrics = self._metrics_cls(labelnames=list(labels.keys()),
                                          vllm_config=vllm_config)
-
-        # Use this flag to hide metrics that were deprecated in
-        # a previous release and which will be removed future
-        self.show_hidden_metrics = \
-            vllm_config.observability_config.show_hidden_metrics
 
     def _log_gauge(self, gauge, data: Union[int, float]) -> None:
         # Convenience function for logging to gauge.
@@ -580,18 +464,10 @@ class PrometheusStatLogger(StatLoggerBase):
         # System state data
         self._log_gauge(self.metrics.gauge_scheduler_running,
                         stats.num_running_sys)
-        self._log_gauge(self.metrics.gauge_scheduler_swapped,
-                        stats.num_swapped_sys)
         self._log_gauge(self.metrics.gauge_scheduler_waiting,
                         stats.num_waiting_sys)
         self._log_gauge(self.metrics.gauge_gpu_cache_usage,
                         stats.gpu_cache_usage_sys)
-        self._log_gauge(self.metrics.gauge_cpu_cache_usage,
-                        stats.cpu_cache_usage_sys)
-        self._log_gauge(self.metrics.gauge_cpu_prefix_cache_hit_rate,
-                        stats.cpu_prefix_cache_hit_rate)
-        self._log_gauge(self.metrics.gauge_gpu_prefix_cache_hit_rate,
-                        stats.gpu_prefix_cache_hit_rate)
         # Including max-lora in metric, in future this property of lora
         # config maybe extended to be dynamic.
         lora_info = {
@@ -629,12 +505,6 @@ class PrometheusStatLogger(StatLoggerBase):
                             stats.time_prefill_requests)
         self._log_histogram(self.metrics.histogram_decode_time_request,
                             stats.time_decode_requests)
-        self._log_histogram(self.metrics.histogram_time_in_queue_request,
-                            stats.time_in_queue_requests)
-        self._log_histogram(self.metrics.histogram_model_forward_time_request,
-                            stats.model_forward_time_requests)
-        self._log_histogram(self.metrics.histogram_model_execute_time_request,
-                            stats.model_execute_time_requests)
         # Metadata
         finished_reason_counter = CollectionsCounter(
             stats.finished_reason_requests)
@@ -662,33 +532,14 @@ class PrometheusStatLogger(StatLoggerBase):
         self.num_prompt_tokens.append(stats.num_prompt_tokens_iter)
         self.num_generation_tokens.append(stats.num_generation_tokens_iter)
 
-        # Update spec decode metrics
-        self.maybe_update_spec_decode_metrics(stats)
-
         # Log locally every local_interval seconds.
         if local_interval_elapsed(stats.now, self.last_local_log,
                                   self.local_interval):
-            if self.spec_decode_metrics is not None:
-                self._log_gauge(
-                    self.metrics.gauge_spec_decode_draft_acceptance_rate,
-                    self.spec_decode_metrics.draft_acceptance_rate)
-                self._log_gauge(self.metrics.gauge_spec_decode_efficiency,
-                                self.spec_decode_metrics.system_efficiency)
-                self._log_counter(
-                    self.metrics.counter_spec_decode_num_accepted_tokens,
-                    self.spec_decode_metrics.accepted_tokens)
-                self._log_counter(
-                    self.metrics.counter_spec_decode_num_draft_tokens,
-                    self.spec_decode_metrics.draft_tokens)
-                self._log_counter(
-                    self.metrics.counter_spec_decode_num_emitted_tokens,
-                    self.spec_decode_metrics.emitted_tokens)
 
             # Reset tracked stats for next interval.
             self.num_prompt_tokens = []
             self.num_generation_tokens = []
             self.last_local_log = stats.now
-            self.spec_decode_metrics = None
 
     def info(self, type: str, obj: SupportsMetricsInfo) -> None:
         # Info type metrics are syntactic sugar for a gauge permanently set to 1

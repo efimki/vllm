@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import asyncio
 import time
 from abc import ABC, abstractmethod
+from functools import cached_property
 from typing import (Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple,
                     Union)
 
@@ -14,8 +16,8 @@ from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.sampler import SamplerOutput
-from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sequence import ExecuteModelRequest, PoolerOutput
+from vllm.tasks import SupportedTask
 from vllm.utils import make_async
 from vllm.worker.worker_base import WorkerBase
 
@@ -33,6 +35,7 @@ class ExecutorBase(ABC):
     """
 
     uses_ray: bool  # whether the executor uses Ray for orchestration.
+    supports_pp: bool = False  # whether the executor supports PP
 
     def __init__(
         self,
@@ -47,10 +50,10 @@ class ExecutorBase(ABC):
         self.scheduler_config = vllm_config.scheduler_config
         self.device_config = vllm_config.device_config
         self.speculative_config = vllm_config.speculative_config
-        self.prompt_adapter_config = vllm_config.prompt_adapter_config
         self.observability_config = vllm_config.observability_config
         self._init_executor()
         self.is_sleeping = False
+        self.sleeping_tags: set[str] = set()
 
     @abstractmethod
     def _init_executor(self) -> None:
@@ -73,7 +76,7 @@ class ExecutorBase(ABC):
                 `self` argument, in addition to the arguments passed in `args`
                 and `kwargs`. The `self` argument will be the worker object.
             timeout: Maximum time in seconds to wait for execution. Raises a
-                :exc:`TimeoutError` on timeout. `None` means wait indefinitely.
+                [`TimeoutError`][] on timeout. `None` means wait indefinitely.
             args: Positional arguments to pass to the worker method.
             kwargs: Keyword arguments to pass to the worker method.
 
@@ -133,6 +136,11 @@ class ExecutorBase(ABC):
 
         return self.collective_rpc(rpc_func)
 
+    @cached_property  # Avoid unnecessary RPC calls
+    def supported_tasks(self) -> tuple[SupportedTask, ...]:
+        output = self.collective_rpc("get_supported_tasks")
+        return output[0]
+
     def execute_model(
         self, execute_model_req: ExecuteModelRequest
     ) -> Optional[List[Union[SamplerOutput, PoolerOutput]]]:
@@ -162,35 +170,6 @@ class ExecutorBase(ABC):
             assert s == sets[0], "All workers should have the same LORAs."
         return sets[0]
 
-    def add_prompt_adapter(
-            self, prompt_adapter_request: PromptAdapterRequest) -> bool:
-        assert prompt_adapter_request.prompt_adapter_id > 0, \
-            "prompt_adapter_id must be greater than 0."
-        return all(
-            self.collective_rpc("add_prompt_adapter",
-                                args=(prompt_adapter_request, )))
-
-    def remove_prompt_adapter(self, prompt_adapter_id: int) -> bool:
-        assert prompt_adapter_id > 0, \
-            "prompt_adapter_id must be greater than 0."
-        return all(
-            self.collective_rpc("remove_prompt_adapter",
-                                args=(prompt_adapter_id, )))
-
-    def pin_prompt_adapter(self, prompt_adapter_id: int) -> bool:
-        assert prompt_adapter_id > 0, \
-            "prompt_adapter_id must be greater than 0."
-        return all(
-            self.collective_rpc("pin_prompt_adapter",
-                                args=(prompt_adapter_id, )))
-
-    def list_prompt_adapters(self) -> Set[int]:
-        sets = self.collective_rpc("list_prompt_adapters")
-        for s in sets:
-            assert (s == sets[0]
-                    ), "All workers should have the same prompt adapters."
-        return sets[0]
-
     def start_profile(self) -> None:
         self.collective_rpc("start_profile")
 
@@ -204,20 +183,34 @@ class ExecutorBase(ABC):
         time_before_sleep = time.perf_counter()
         self.collective_rpc("sleep", kwargs=dict(level=level))
         time_after_sleep = time.perf_counter()
+        self.sleeping_tags = {"weights", "kv_cache"}
         self.is_sleeping = True
         logger.info("It took %.6f seconds to fall asleep.",
                     time_after_sleep - time_before_sleep)
 
-    def wake_up(self):
+    def wake_up(self, tags: Optional[list[str]] = None):
         if not self.is_sleeping:
             logger.warning("Executor is not sleeping.")
             return
+        if tags:
+            for tag in tags:
+                if tag not in self.sleeping_tags:
+                    logger.warning("Tag %s is not in sleeping tags %s", tag,
+                                   self.sleeping_tags)
+                    return
         time_before_wakeup = time.perf_counter()
-        self.collective_rpc("wake_up")
+        self.collective_rpc("wake_up", kwargs=dict(tags=tags))
         time_after_wakeup = time.perf_counter()
-        self.is_sleeping = False
-        logger.info("It took %.6f seconds to wake up.",
-                    time_after_wakeup - time_before_wakeup)
+        logger.info("It took %.6f seconds to wake up tags %s.",
+                    time_after_wakeup - time_before_wakeup,
+                    tags if tags is not None else self.sleeping_tags)
+        if tags:
+            for tag in tags:
+                self.sleeping_tags.remove(tag)
+        else:
+            self.sleeping_tags.clear()
+        if not self.sleeping_tags:
+            self.is_sleeping = False
 
     def save_sharded_state(
         self,
