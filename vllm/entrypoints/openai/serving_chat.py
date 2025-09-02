@@ -1418,7 +1418,8 @@ class OpenAIServingChat(OpenAIServing):
             prompt_token_ids=(final_res.prompt_token_ids
                               if request.return_token_ids else None),
             kv_transfer_params=final_res.kv_transfer_params,
-        ), final_res.inband_engine_stats
+            stats=final_res.inband_engine_stats,
+        )
 
         # Log complete response if output logging is enabled
         if self.enable_log_outputs and self.request_logger:
