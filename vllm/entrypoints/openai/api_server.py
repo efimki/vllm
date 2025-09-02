@@ -691,10 +691,9 @@ async def create_chat_completion(request: ChatCompletionRequest,
         return JSONResponse(content=generator.model_dump(),
                             status_code=generator.error.code)
 
-    # Tuple[ChatCompletionResponse,Optional[InbandEngineStats]]
-    elif isinstance(generator, tuple):
-        return JSONResponse(content=generator[0].model_dump(),
-                            headers=metrics_header(generator[1],
+    elif isinstance(generator, ChatCompletionResponse):
+        return JSONResponse(content=generator.model_dump(),
+                            headers=metrics_header(generator.stats,
                                                    metrics_header_format))
 
     return StreamingResponse(content=generator, media_type="text/event-stream")
@@ -741,10 +740,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         return JSONResponse(content=generator.model_dump(),
                             status_code=generator.error.code)
 
-    # Tuple[ChatCompletionResponse,Optional[InbandEngineStats]]
-    elif isinstance(generator, tuple):
-        return JSONResponse(content=generator[0].model_dump(),
-                            headers=metrics_header(generator[1],
+    elif isinstance(generator, CompletionResponse):
+        return JSONResponse(content=generator.model_dump(),
+                            headers=metrics_header(generator.stats,
                                                    metrics_header_format))
 
     return StreamingResponse(content=generator, media_type="text/event-stream")

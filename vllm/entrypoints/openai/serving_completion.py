@@ -280,16 +280,15 @@ class OpenAIServingCompletion(OpenAIServing):
             final_res_batch_checked = cast(list[RequestOutput],
                                            final_res_batch)
 
-            response, inband_engine_stats = (
-                self.request_output_to_completion_response(
-                    final_res_batch_checked,
-                    request,
-                    request_id,
-                    created_time,
-                    model_name,
-                    tokenizer,
-                    request_metadata,
-                ))
+            response = self.request_output_to_completion_response(
+                final_res_batch_checked,
+                request,
+                request_id,
+                created_time,
+                model_name,
+                tokenizer,
+                request_metadata,
+            )
         except asyncio.CancelledError:
             return self.create_error_response("Client disconnected")
         except ValueError as e:
@@ -604,7 +603,8 @@ class OpenAIServingCompletion(OpenAIServing):
             choices=choices,
             usage=usage,
             kv_transfer_params=kv_transfer_params,
-        ), latest_engine_stats
+            stats=latest_engine_stats,
+        )
 
     def _create_completion_logprobs(
         self,
