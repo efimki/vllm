@@ -59,6 +59,7 @@ from vllm.entrypoints.openai.protocol import (ChatCompletionRequest,
                                               ClassificationRequest,
                                               ClassificationResponse,
                                               CompletionRequest,
+                                              CompletionResponse,
                                               DetokenizeRequest,
                                               DetokenizeResponse,
                                               EmbeddingRequest,
@@ -736,6 +737,8 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value,
                             detail=str(e)) from e
 
+    logger.warning("mef: Found response %s", generator)
+
     if isinstance(generator, ErrorResponse):
         return JSONResponse(content=generator.model_dump(),
                             status_code=generator.error.code)
@@ -744,6 +747,12 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         return JSONResponse(content=generator.model_dump(),
                             headers=metrics_header(generator.stats,
                                                    metrics_header_format))
+
+    # Tuple[ChatCompletionResponse,Optional[InbandEngineStats]]
+    # elif isinstance(generator, tuple):
+    #     return JSONResponse(content=generator[0].model_dump(),
+    #                         headers=metrics_header(generator[1],
+    #                                                metrics_header_format))
 
     return StreamingResponse(content=generator, media_type="text/event-stream")
 
