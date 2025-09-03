@@ -95,6 +95,7 @@ class OpenAIServingCompletion(OpenAIServing):
             - suffix (the language models we currently support do not support
             suffix)
         """
+        logger.warning("mef 1")
         error_check_ret = await self._check_model(request)
         if error_check_ret is not None:
             return error_check_ret
@@ -113,6 +114,7 @@ class OpenAIServingCompletion(OpenAIServing):
         if request.echo and request.prompt_embeds is not None:
             return self.create_error_response(
                 "Echo is unsupported with prompt embeds.")
+        logger.warning("mef 2")
 
         request_id = (
             f"cmpl-"
@@ -122,6 +124,7 @@ class OpenAIServingCompletion(OpenAIServing):
         request_metadata = RequestResponseMetadata(request_id=request_id)
         if raw_request:
             raw_request.state.request_metadata = request_metadata
+        logger.warning("mef 3")
 
         try:
             lora_request = self._maybe_get_adapters(request)
@@ -150,6 +153,8 @@ class OpenAIServingCompletion(OpenAIServing):
         except jinja2.TemplateError as e:
             logger.exception("Error in preprocessing prompt inputs")
             return self.create_error_response(str(e))
+
+        logger.warning("mef 4")
 
         # Schedule the request and get the result generator.
         generators: list[AsyncGenerator[RequestOutput, None]] = []
@@ -226,6 +231,7 @@ class OpenAIServingCompletion(OpenAIServing):
                         trace_headers=trace_headers,
                         priority=request.priority,
                     )
+                logger.warning("mef 5. Generator %s", generator)
 
                 generators.append(generator)
         except ValueError as e:
@@ -246,6 +252,7 @@ class OpenAIServingCompletion(OpenAIServing):
 
         # Streaming response
         if stream:
+            logger.warning("mef 6.")
             return self.completion_stream_generator(
                 request,
                 engine_prompts,
@@ -278,6 +285,7 @@ class OpenAIServingCompletion(OpenAIServing):
 
             final_res_batch_checked = cast(list[RequestOutput],
                                            final_res_batch)
+            logger.warning("mef 7.")
 
             response = self.request_output_to_completion_response(
                 final_res_batch_checked,
@@ -288,11 +296,16 @@ class OpenAIServingCompletion(OpenAIServing):
                 tokenizer,
                 request_metadata,
             )
+            logger.warning(
+                "mef request_output_to_completion_response: response: [%s]",
+                response)
         except asyncio.CancelledError:
             return self.create_error_response("Client disconnected")
         except ValueError as e:
             # TODO: Use a vllm-specific Validation Error
             return self.create_error_response(str(e))
+
+        logger.warning("mef 8.")
 
         # When user requests streaming but we don't stream, we still need to
         # return a streaming response with a single event.
@@ -305,7 +318,7 @@ class OpenAIServingCompletion(OpenAIServing):
 
             return fake_stream_generator()
 
-        return response, inband_engine_stats
+        return response  # , inband_engine_stats
 
     async def completion_stream_generator(
         self,
@@ -505,7 +518,7 @@ class OpenAIServingCompletion(OpenAIServing):
         num_prompt_tokens = 0
         num_generated_tokens = 0
         kv_transfer_params = None
-        last_final_res = None        # choose latest stats from the batch of request outputs
+        last_final_res = None  # choose latest stats from the batch of outputs
         latest_engine_stats: Optional[InbandEngineStats] = None
         for final_res in final_res_batch:
             last_final_res = final_res
