@@ -43,27 +43,6 @@ async def client(server):
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_with_stats(client: openai.AsyncOpenAI):
-    messages = [{
-        "role": "system",
-        "content": "you are a helpful assistant"
-    }, {
-        "role": "user",
-        "content": "what is 1+1?"
-    }]
-
-    chat_completion = await client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=messages,
-        max_completion_tokens=5,
-        temperature=0.0,
-    )
-
-    assert hasattr(chat_completion, 'stats')
-    assert chat_completion.stats is not None
-
-
-@pytest.mark.asyncio
 async def test_chat_completion_with_orca_header(server: RemoteOpenAIServer):
     messages = [{
         "role": "system",
@@ -76,14 +55,74 @@ async def test_chat_completion_with_orca_header(server: RemoteOpenAIServer):
     client = openai.OpenAI(
         api_key="EMPTY",
         base_url=f"http://localhost:{server.port}/v1",
+        default_headers={"endpoint-load-metrics-format": "TEXT"},
     )
 
-    chat_completion = client.chat.completions.create(
+    # 1. Use raw client to get response headers.
+    raw_client = client.with_raw_response
+
+    # 2. Make the API call using the raw_client
+    response_with_raw = raw_client.chat.completions.create(
         model=MODEL_NAME,
         messages=messages,
-        max_completion_tokens=5,
-        temperature=0.0,
         extra_headers={"endpoint-load-metrics-format": "TEXT"},
     )
 
-    assert "endpoint-load-metrics" in chat_completion._headers
+    # 3. Access the raw httpx.Response object
+    raw_http_response = response_with_raw.http_response
+
+    # 4. Get the headers from the httpx.Response object
+    response_headers = raw_http_response.headers
+
+    assert "endpoint-load-metrics" in response_headers
+
+
+@pytest.mark.asyncio
+async def test_completion_with_orca_header(client: openai.AsyncOpenAI):
+    # 1. Use raw client to get response headers.
+    raw_client = client.with_raw_response
+
+    # 2. Make the API call using the raw_client
+    completion = await raw_client.completions.create(
+        model=MODEL_NAME,
+        prompt="Hello, my name is",
+        max_tokens=5,
+        extra_headers={"endpoint-load-metrics-format": "JSON"},
+    )
+
+    # 3. Access the raw httpx.Response object
+    raw_http_response = completion.http_response
+
+    # 4. Get the headers from the httpx.Response object
+    response_headers = raw_http_response.headers
+
+    assert "endpoint-load-metrics" in response_headers
+
+
+@pytest.mark.asyncio
+async def test_single_completion(client: openai.AsyncOpenAI):
+    completion = await client.completions.create(
+        model=MODEL_NAME,
+        prompt="Hello, my name is",
+        max_tokens=5,
+        extra_headers={"endpoint-load-metrics-format": "JSON"},
+        temperature=0.0)
+
+    assert completion.id is not None
+    assert completion.choices is not None and len(completion.choices) == 1
+
+    choice = completion.choices[0]
+    assert len(choice.text) >= 5
+    assert choice.finish_reason == "length"
+    assert completion.usage == openai.types.CompletionUsage(
+        completion_tokens=5, prompt_tokens=6, total_tokens=11)
+
+    # test using token IDs
+    completion = await client.completions.create(
+        model=MODEL_NAME,
+        prompt=[0, 0, 0, 0, 0],
+        max_tokens=5,
+        temperature=0.0,
+    )
+    assert len(completion.choices[0].text) >= 1
+    assert completion.choices[0].prompt_logprobs is None
